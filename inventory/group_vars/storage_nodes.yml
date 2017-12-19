@@ -1,0 +1,6 @@
+---
+storageconfig:
+  directory:
+    paths:
+      - /data
+...

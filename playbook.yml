@@ -1,0 +1,114 @@
+---
+- hosts: all
+  tasks:
+    - name: remove any old rook data directories
+      become: yes
+      become_method: sudo
+      file:
+        path: "{{ data_dir_host_path }}"
+        state: absent
+        force: yes
+      tags: cleanup
+
+- hosts: storage_nodes
+  tasks:
+    - name: cleanup data directories
+      become: yes
+      become_method: sudo
+      with_items: "{{ storageconfig.directory.paths  }}"
+      shell: "rm -rf {{ item }}/*"
+      tags: cleanup
+
+- hosts: k8s_master
+  tasks:
+    - name: ensure no rook operator is setup yet
+      shell: "kubectl get po -n {{ rook_operator_namespace }} -o jsonpath='{.items[*]}' | wc -l | tr -d ' '"
+      register: norookoperator
+      failed_when: (norookoperator.stdout | int) > 0
+      changed_when: false
+
+    - name: ensure no rook cluster is setup yet
+      shell: "kubectl get po -n {{ rook_cluster_namespace }} -o jsonpath='{.items[*]}' | wc -l | tr -d ' '"
+      register: norookcluster
+      failed_when: (norookcluster.stdout | int) > 0
+      changed_when: false
+      when: norookoperator | succeeded
+
+
+    - name: copy rook operator config
+      become: yes
+      become_method: sudo
+      template:
+        src: rook-operator-config.yml.j2
+        dest: "{{ rook_cluster_config_dir }}/rook-operator-config.yml"
+      register: rook_operator_config
+      when: norookcluster | succeeded
+
+    - name: copy rook cluster config
+      become: yes
+      become_method: sudo
+      template:
+        src: rook-cluster-config.yml.j2
+        dest: "{{ rook_cluster_config_dir }}/rook-cluster-config.yml"
+      register: rook_cluster_config
+      when: norookcluster | succeeded
+
+
+    - name: create rook operator
+      shell: "kubectl create -f {{ rook_cluster_config_dir }}/rook-operator-config.yml"
+      tags: operator
+
+    - name: ensure rook operator is up and running
+      shell: >
+        timeout -k 300s 300s
+        kubectl get po -n "{{ rook_operator_namespace }}"
+         -o jsonpath='{range .items[*]}{.metadata.name} : {.status.phase}{"\n"}{end}'
+          | grep -vic Running
+      register: rook_operator_created
+      changed_when: false
+      failed_when: (rook_operator_created.stdout | int) > 0
+      retries: 10
+      tags: operator, cluster
+
+    - name: create rook cluster
+      shell: "kubectl create -f {{ rook_cluster_config_dir }}/rook-cluster-config.yml"
+      when: rook_operator_created | succeeded
+      tags: cluster
+
+    - name: ensure rook cluster is up and running
+      shell: >
+        timeout -k 300s 300s
+        kubectl get po -n "{{ rook_cluster_namespace }}"
+         -o jsonpath='{range .items[*]}{.metadata.name} : {.status.phase}{"\n"}{end}'
+          | grep -vic Running
+      register: rook_cluster_created
+      changed_when: false
+      failed_when: (rook_cluster_created.stdout | int) > 0
+      retries: 10
+      tags: cluster
+
+    - name: copy rook toolbox pod config
+      become: yes
+      become_method: sudo
+      template:
+        src: rook-toolbox-config.yml.j2
+        dest: "{{ rook_cluster_config_dir }}/rook-toolbox-config.yml"
+      register: rook_toolbox_config
+#      when: rook_cluster_created | succeeded
+      tags: toolbox
+
+    - name: launch rook toolbox pod
+      shell: "kubectl create -f {{ rook_cluster_config_dir }}/rook-toolbox-config.yml"
+      tags: toolbox
+
+    - name: ensure rook toolbox pod is up and running
+      shell: >
+        kubectl get po -n "{{ rook_cluster_namespace }}" rook-tools
+         -o jsonpath='{range .items[*]}{.metadata.name} : {.status.phase}{"\n"}{end}'
+          | grep -vic Running
+      register: rook_toolbox_launched
+      changed_when: false
+      failed_when: (rook_toolbox_launched.stdout | int) > 0
+      retries: 10
+      tags: toolbox
+

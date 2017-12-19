@@ -1,0 +1,11 @@
+---
+rook_cluster_config_dir: /etc/kubernetes
+rook_operator_namespace: rook-system
+rook_cluster_namespace: rook
+storageconfig:
+  # storetype: bluestore
+  # databasesize: 1024
+  # journalsize: 1024
+  directory:
+    paths:
+      - /data
